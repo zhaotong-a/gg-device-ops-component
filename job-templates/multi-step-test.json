@@ -1,0 +1,47 @@
+{
+  "version": "1.0",
+  "includeStdOut": true,
+  "steps": [
+    {
+      "action": {
+        "name": "Step1-GetStoreID",
+        "type": "runCommand",
+        "input": {
+          "command": "/opt/device-scripts/get-store-id.sh",
+          "timeout": 30
+        }
+      }
+    },
+    {
+      "action": {
+        "name": "Step2-GetCameraIntrinsics",
+        "type": "runCommand",
+        "input": {
+          "command": "/opt/device-scripts/get-camera-intrinsics.sh",
+          "timeout": 30
+        }
+      }
+    },
+    {
+      "action": {
+        "name": "Step3-RunDiagnostics",
+        "type": "runCommand",
+        "input": {
+          "command": "/opt/device-scripts/run-diagnostics.sh",
+          "timeout": 60
+        }
+      }
+    }
+  ],
+  "finalStep": {
+    "action": {
+      "name": "FinalStep-Summary",
+      "type": "runCommand",
+      "input": {
+        "command": "/bin/echo",
+        "args": ["All steps completed successfully"],
+        "timeout": 5
+      }
+    }
+  }
+}

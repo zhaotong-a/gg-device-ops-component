@@ -1,0 +1,59 @@
+{
+  "version": "1.0",
+  "includeStdOut": true,
+  "steps": [
+    {
+      "action": {
+        "name": "Step1-Hostname",
+        "type": "runCommand",
+        "input": {
+          "command": "/bin/hostname",
+          "timeout": 5
+        }
+      }
+    },
+    {
+      "action": {
+        "name": "Step2-Date",
+        "type": "runCommand",
+        "input": {
+          "command": "/bin/date",
+          "args": ["+%Y-%m-%d %H:%M:%S"],
+          "timeout": 5
+        }
+      }
+    },
+    {
+      "action": {
+        "name": "Step3-Uptime",
+        "type": "runCommand",
+        "input": {
+          "command": "/usr/bin/uptime",
+          "timeout": 5
+        }
+      }
+    },
+    {
+      "action": {
+        "name": "Step4-DiskSpace",
+        "type": "runCommand",
+        "input": {
+          "command": "/bin/df",
+          "args": ["-h", "/"],
+          "timeout": 5
+        }
+      }
+    }
+  ],
+  "finalStep": {
+    "action": {
+      "name": "FinalStep-Summary",
+      "type": "runCommand",
+      "input": {
+        "command": "/bin/echo",
+        "args": ["✅ All diagnostic steps completed successfully!"],
+        "timeout": 5
+      }
+    }
+  }
+}

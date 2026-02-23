@@ -1,0 +1,43 @@
+---
+RecipeFormatVersion: '2020-01-25'
+ComponentName: com.example.DeviceOps
+ComponentVersion: '1.0.0'
+ComponentDescription: 'Device Operations Component - IoT Jobs executor for remote device management'
+ComponentPublisher: 'AWS'
+ComponentType: aws.greengrass.generic
+
+ComponentConfiguration:
+  DefaultConfiguration:
+    logging:
+      level: "info"
+    security:
+      enabled: false
+      commandAllowlist: []
+      pathAllowlist: []
+    execution:
+      defaultTimeout: 300
+    accessControl:
+      aws.greengrass.ipc.mqttproxy:
+        "com.example.DeviceOps:mqttproxy:1":
+          policyDescription: "Allows access to publish/subscribe to IoT Core MQTT topics for job handling and reconnection detection"
+          operations:
+            - "aws.greengrass#PublishToIoTCore"
+            - "aws.greengrass#SubscribeToIoTCore"
+          resources:
+            - "$aws/things/*/jobs/*"
+            - "$aws/things/+/jobs/notify-next"
+            - "reconnect/*"
+
+Manifests:
+  - Platform:
+      os: linux
+      architecture: aarch64
+      runtime: "*"
+    Name: Linux-aarch64
+    Lifecycle:
+      run: |
+        export RUST_LOG=device_ops_component={configuration:/logging/level}
+        {artifacts:decompressedPath}/device-ops-1.0.0-aarch64/bin/device-ops-component
+    Artifacts:
+      - URI: s3://YOUR-BUCKET/device-ops/1.0.0/device-ops-1.0.0-aarch64.zip
+        Unarchive: ZIP

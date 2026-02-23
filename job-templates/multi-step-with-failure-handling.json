@@ -1,0 +1,62 @@
+{
+  "version": "1.0",
+  "includeStdOut": true,
+  "steps": [
+    {
+      "action": {
+        "name": "Step1-Success",
+        "type": "runCommand",
+        "input": {
+          "command": "/bin/echo",
+          "args": ["Step 1: This will succeed"],
+          "timeout": 5
+        }
+      }
+    },
+    {
+      "action": {
+        "name": "Step2-FailButIgnore",
+        "type": "runCommand",
+        "input": {
+          "command": "/bin/false",
+          "timeout": 5
+        },
+        "ignoreStepFailure": true
+      }
+    },
+    {
+      "action": {
+        "name": "Step3-ContinueAfterIgnored",
+        "type": "runCommand",
+        "input": {
+          "command": "/bin/echo",
+          "args": ["Step 3: This runs even though Step 2 failed (because it was ignored)"],
+          "timeout": 5
+        }
+      }
+    },
+    {
+      "action": {
+        "name": "Step4-WithStderr",
+        "type": "runCommand",
+        "input": {
+          "command": "/bin/sh",
+          "args": ["-c", "echo 'stdout message' && echo 'stderr message' >&2"],
+          "timeout": 5
+        },
+        "allowStdErr": 1
+      }
+    }
+  ],
+  "finalStep": {
+    "action": {
+      "name": "FinalStep-OnlyIfAllSucceed",
+      "type": "runCommand",
+      "input": {
+        "command": "/bin/echo",
+        "args": ["✅ Final step: All steps completed!"],
+        "timeout": 5
+      }
+    }
+  }
+}

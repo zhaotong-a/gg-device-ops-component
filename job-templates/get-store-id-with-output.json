@@ -1,0 +1,14 @@
+{
+  "version": "1.0",
+  "includeStdOut": true,
+  "steps": [{
+    "action": {
+      "name": "Get-Store-ID",
+      "type": "runCommand",
+      "input": {
+        "command": "/opt/device-scripts/get-store-id.sh",
+        "timeout": 60
+      }
+    }
+  }]
+}
