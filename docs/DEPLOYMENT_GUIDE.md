@@ -13,93 +13,7 @@ This guide covers the complete deployment process for the Device Operations Comp
 
 ## Part 1: Cloud Infrastructure Setup
 
-### 1.1 Create IoT Core Rule for Reconnection Detection
-
-This rule enables the component to detect when devices reconnect and automatically query for missed jobs.
-
-#### Step 1: Create IAM Role for IoT Rule
-
-```bash
-# Create trust policy
-cat > iot-rule-trust-policy.json << EOF
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Effect": "Allow",
-      "Principal": {
-        "Service": "iot.amazonaws.com"
-      },
-      "Action": "sts:AssumeRole"
-    }
-  ]
-}
-EOF
-
-# Create role
-aws iam create-role \
-  --role-name DeviceOpsReconnectionHandlerRole \
-  --assume-role-policy-document file://iot-rule-trust-policy.json
-
-# Create and attach policy
-cat > iot-rule-policy.json << EOF
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Effect": "Allow",
-      "Action": "iot:Publish",
-      "Resource": "arn:aws:iot:*:*:topic/reconnect/*"
-    }
-  ]
-}
-EOF
-
-aws iam put-role-policy \
-  --role-name DeviceOpsReconnectionHandlerRole \
-  --policy-name ReconnectPublishPolicy \
-  --policy-document file://iot-rule-policy.json
-```
-
-#### Step 2: Create IoT Core Rule
-
-```bash
-# Get your account ID and region
-ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-REGION=$(aws configure get region)
-ROLE_ARN="arn:aws:iam::${ACCOUNT_ID}:role/DeviceOpsReconnectionHandlerRole"
-
-# Create the rule
-cat > reconnection-rule.json << EOF
-{
-  "sql": "SELECT clientId FROM '\$aws/events/subscriptions/subscribed/+' WHERE startswith(get(topics, 0), 'reconnect/')",
-  "description": "Detects device reconnections and triggers job query",
-  "actions": [
-    {
-      "republish": {
-        "topic": "reconnect/\${topic(5)}",
-        "qos": 1,
-        "roleArn": "${ROLE_ARN}"
-      }
-    }
-  ],
-  "ruleDisabled": false,
-  "awsIotSqlVersion": "2016-03-23"
-}
-EOF
-
-aws iot create-topic-rule \
-  --rule-name DeviceOpsReconnectionHandler \
-  --topic-rule-payload file://reconnection-rule.json
-```
-
-#### Step 3: Verify Rule Creation
-
-```bash
-aws iot get-topic-rule --rule-name DeviceOpsReconnectionHandler
-```
-
-### 1.2 Update IoT Policy for Devices
+### 1.1 Update IoT Policy for Devices
 
 Add the following to your thing certificate policy (or thing group policy):
 
@@ -113,7 +27,7 @@ Add the following to your thing certificate policy (or thing group policy):
         "iot:Publish"
       ],
       "Resource": [
-        "arn:aws:iot:*:*:topic/$aws/things/${iot:Connection.Thing.ThingName}/jobs/get",
+        "arn:aws:iot:*:*:topic/$aws/things/${iot:Connection.Thing.ThingName}/jobs/$next/get",
         "arn:aws:iot:*:*:topic/$aws/things/${iot:Connection.Thing.ThingName}/jobs/*/update"
       ]
     },
@@ -126,8 +40,7 @@ Add the following to your thing certificate policy (or thing group policy):
         "arn:aws:iot:*:*:topicfilter/$aws/things/${iot:Connection.Thing.ThingName}/jobs/notify-next",
         "arn:aws:iot:*:*:topicfilter/$aws/things/${iot:Connection.Thing.ThingName}/jobs/$next/get/accepted",
         "arn:aws:iot:*:*:topicfilter/$aws/things/${iot:Connection.Thing.ThingName}/jobs/+/update/accepted",
-        "arn:aws:iot:*:*:topicfilter/$aws/things/${iot:Connection.Thing.ThingName}/jobs/+/update/rejected",
-        "arn:aws:iot:*:*:topicfilter/reconnect/${iot:Connection.Thing.ThingName}"
+        "arn:aws:iot:*:*:topicfilter/$aws/things/${iot:Connection.Thing.ThingName}/jobs/+/update/rejected"
       ]
     },
     {
@@ -139,13 +52,14 @@ Add the following to your thing certificate policy (or thing group policy):
         "arn:aws:iot:*:*:topic/$aws/things/${iot:Connection.Thing.ThingName}/jobs/notify-next",
         "arn:aws:iot:*:*:topic/$aws/things/${iot:Connection.Thing.ThingName}/jobs/$next/get/accepted",
         "arn:aws:iot:*:*:topic/$aws/things/${iot:Connection.Thing.ThingName}/jobs/+/update/accepted",
-        "arn:aws:iot:*:*:topic/$aws/things/${iot:Connection.Thing.ThingName}/jobs/+/update/rejected",
-        "arn:aws:iot:*:*:topic/reconnect/${iot:Connection.Thing.ThingName}"
+        "arn:aws:iot:*:*:topic/$aws/things/${iot:Connection.Thing.ThingName}/jobs/+/update/rejected"
       ]
     }
   ]
 }
 ```
+
+**Note**: No custom IoT Core Rules are needed. IoT Jobs `notify-next` handles steady-state delivery; `$next/get` on startup catches jobs queued while offline.
 
 #### Update Existing Policy
 
@@ -160,7 +74,7 @@ aws iot create-policy-version \
   --set-as-default
 ```
 
-### 1.3 Create Custom Job Templates (Optional but Recommended)
+### 1.2 Create Custom Job Templates (Optional but Recommended)
 
 Create job templates for common operations:
 
@@ -199,10 +113,15 @@ aws iot create-job-template \
 ### 2.1 Build Component
 
 ```bash
-# Build for aarch64 (ARM64)
-./package-aarch64.sh
+# Build for both architectures
+./scripts/build-and-package.sh
 
-# This creates: device-ops-1.0.0-aarch64.zip
+# Or build for a specific architecture
+./scripts/docker-build.sh aarch64
+./scripts/package-aarch64.sh
+
+./scripts/docker-build.sh x86_64
+./scripts/package-x86_64.sh
 ```
 
 ### 2.2 Upload to S3
@@ -212,8 +131,10 @@ aws iot create-job-template \
 S3_BUCKET="your-component-bucket"
 COMPONENT_VERSION="1.0.0"
 
-# Upload artifact
+# Upload artifacts for both architectures
 aws s3 cp device-ops-${COMPONENT_VERSION}-aarch64.zip \
+  s3://${S3_BUCKET}/device-ops/${COMPONENT_VERSION}/
+aws s3 cp device-ops-${COMPONENT_VERSION}-x86_64.zip \
   s3://${S3_BUCKET}/device-ops/${COMPONENT_VERSION}/
 ```
 
@@ -240,7 +161,7 @@ cat > deployment.json << EOF
     "com.example.DeviceOps": {
       "componentVersion": "1.0.0",
       "configurationUpdate": {
-        "merge": "{\"security\":{\"enabled\":false},\"execution\":{\"defaultTimeout\":300}}"
+        "merge": "{\"security\":{\"allowlist\":[]},\"execution\":{\"defaultTimeout\":300}}"
       }
     }
   }
@@ -261,7 +182,7 @@ cat > deployment.json << EOF
     "com.example.DeviceOps": {
       "componentVersion": "1.0.0",
       "configurationUpdate": {
-        "merge": "{\"security\":{\"enabled\":false},\"execution\":{\"defaultTimeout\":300}}"
+        "merge": "{\"security\":{\"allowlist\":[]},\"execution\":{\"defaultTimeout\":300}}"
       }
     }
   }
@@ -305,8 +226,7 @@ Expected log output:
 [INFO] Device Operations Component starting
 [INFO] Connected to Greengrass IPC
 [INFO] Subscribing to IoT Jobs notifications
-[INFO] Subscribing to reconnection signals
-[INFO] Listening for job notifications and reconnection signals
+[INFO] Listening for job notifications
 ```
 
 ## Part 4: Testing
@@ -397,28 +317,12 @@ aws iot describe-job-execution \
   --output text | jq .
 ```
 
-### 4.3 Test Reconnection Detection
-
-```bash
-# On the device, restart the Greengrass service to trigger reconnection
-sudo systemctl restart greengrass
-
-# Watch logs for reconnection detection
-sudo tail -f /greengrass/v2/logs/com.example.DeviceOps.log | grep -i reconnect
-```
-
-Expected output:
-```
-[INFO] Reconnection detected - will query pending jobs
-[INFO] Requesting next pending job
-```
-
-### 4.4 Test Offline Job Queuing
+### 4.3 Test Offline Job Queuing
 
 1. Disconnect device from network
 2. Create a job targeting the device
 3. Reconnect device
-4. Verify job executes automatically
+4. Verify job executes automatically (IoT Jobs `notify-next` delivers it on reconnection, or startup `$next/get` query picks it up)
 
 ## Part 5: Monitoring
 
@@ -460,14 +364,6 @@ sudo tail -f /greengrass/v2/logs/greengrass.log
 3. Scripts exist and are executable: `ls -la /opt/device-scripts/`
 4. Component logs for errors
 
-### Issue: Reconnection not detected
-
-**Check:**
-1. IoT Core Rule is enabled: `aws iot get-topic-rule --rule-name DeviceOpsReconnectionHandler`
-2. Rule IAM role has publish permissions
-3. Device policy allows `reconnect/*` topic
-4. Component logs show subscription to reconnect topic
-
 ### Issue: Permission denied errors
 
 **Check:**
@@ -484,25 +380,22 @@ Enable command allowlisting:
 ```json
 {
   "security": {
-    "enabled": true,
-    "commandAllowlist": [
-      "/opt/device-scripts/get-store-id.sh",
-      "/opt/device-scripts/get-camera-intrinsics.sh"
-    ],
-    "pathAllowlist": ["/opt/device-scripts/"]
+    "allowlist": [
+      "/opt/device-scripts/",
+      "hostname"
+    ]
   }
 }
 ```
 
 ### Execution Settings
 
-Adjust timeout and concurrency:
+Adjust default timeout:
 
 ```json
 {
   "execution": {
-    "defaultTimeout": 600,
-    "maxConcurrentJobs": 1
+    "defaultTimeout": 600
   }
 }
 ```
@@ -512,7 +405,7 @@ Adjust timeout and concurrency:
 1. **Use Job Templates**: Define templates for common operations with IAM restrictions
 2. **Enable Security Controls**: Use allowlisting in production environments
 3. **Monitor Logs**: Set up CloudWatch Logs forwarding for centralized monitoring
-4. **Test Reconnection**: Regularly test reconnection scenarios
+4. **Test Offline Recovery**: Verify jobs execute after reconnection
 5. **Version Scripts**: Keep device scripts in version control
 6. **Gradual Rollout**: Deploy to small groups first, then expand
 

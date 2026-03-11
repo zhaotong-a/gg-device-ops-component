@@ -27,7 +27,7 @@ async fn main() -> Result<()> {
     // Load configuration
     let config = Config::load(None)?;
     tracing::info!(
-        security_enabled = config.security.enabled,
+        allowlist_entries = config.security.allowlist.len(),
         default_timeout = config.execution.default_timeout,
         "Configuration loaded"
     );

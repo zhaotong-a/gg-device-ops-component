@@ -26,8 +26,8 @@ Test multi-step job execution with different scenarios.
 
 **Examples:**
 ```bash
-./test-multi-step.sh ihm-dpm-dpm-pi-5 simple
-./test-multi-step.sh ihm-dpm-dpm-pi-5 failure
+./test-multi-step.sh my-device simple
+./test-multi-step.sh my-device failure
 ```
 
 ### create-job.sh
@@ -101,7 +101,7 @@ Templates are in `../../job-templates/`:
 ### Failure Test
 - ✅ Step 2 fails but is ignored
 - ✅ Execution continues
-- ✅ Final step runs
+- ✅ Final step always runs (cleanup semantics)
 - ✅ Overall status: SUCCESS
 
 ## Troubleshooting

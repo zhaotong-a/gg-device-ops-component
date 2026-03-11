@@ -94,7 +94,7 @@ sudo journalctl -u greengrass.service | grep "<job-id>"
 
 ## Important Notes
 
-- **Size Limit**: AWS IoT Jobs statusDetails is limited to ~32KB
+- **Size Limit**: AWS IoT Jobs statusDetails allows max 10 key-value pairs, with each value limited to 1,024 characters
 - **Multi-Step**: Uses compact JSON format to stay under AWS's 10 key-value pair limit
 - **Security**: Avoid including sensitive data in stdout
 - **Debugging**: Device logs always contain full output regardless of `includeStdOut` setting

@@ -1,13 +1,9 @@
 {
   "security": {
-    "enabled": false,
-    "commandAllowlist": [
-      "/opt/device-scripts/get-store-id.sh",
-      "/opt/device-scripts/get-camera-intrinsics.sh",
-      "/opt/device-scripts/run-diagnostics.sh"
-    ],
-    "pathAllowlist": [
-      "/opt/device-scripts/"
+    "allowlist": [
+      "/opt/device-scripts/",
+      "hostname",
+      "ifconfig"
     ]
   },
   "execution": {

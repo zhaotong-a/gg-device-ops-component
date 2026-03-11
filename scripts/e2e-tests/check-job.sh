@@ -8,7 +8,7 @@ if [ $# -lt 2 ]; then
     echo "Usage: $0 <thing-name> <job-id>"
     echo ""
     echo "Example:"
-    echo "  $0 ihm-dpm-dpm-pi4 get-store-id-ihm-dpm-dpm-pi4-1234567890"
+    echo "  $0 my-device get-store-id-my-device-1234567890"
     exit 1
 fi
 

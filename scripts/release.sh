@@ -33,15 +33,16 @@ bash "$SCRIPT_DIR/build-and-package.sh" "$VERSION"
 # Step 2: Upload to S3
 echo ""
 echo "Step 2/4: Uploading to S3..."
-PACKAGE_FILE="device-ops-${VERSION}-aarch64.zip"
 
-if [ ! -f "$PACKAGE_FILE" ]; then
-    echo "Error: Package file not found: $PACKAGE_FILE"
-    exit 1
-fi
-
-aws s3 cp "$PACKAGE_FILE" "s3://${S3_BUCKET}/device-ops/${VERSION}/"
-echo "✅ Uploaded to s3://${S3_BUCKET}/device-ops/${VERSION}/${PACKAGE_FILE}"
+for ARCH in aarch64 x86_64; do
+    PACKAGE_FILE="device-ops-${VERSION}-${ARCH}.zip"
+    if [ ! -f "$PACKAGE_FILE" ]; then
+        echo "Error: Package file not found: $PACKAGE_FILE"
+        exit 1
+    fi
+    aws s3 cp "$PACKAGE_FILE" "s3://${S3_BUCKET}/device-ops/${VERSION}/"
+    echo "✅ Uploaded ${PACKAGE_FILE}"
+done
 
 # Step 3: Create component version
 echo ""

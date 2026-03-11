@@ -12,7 +12,7 @@ if [ $# -lt 2 ]; then
     echo "  failure      - Test failure handling with ignoreStepFailure"
     echo ""
     echo "Example:"
-    echo "  $0 ihm-dpm-dpm-pi-5 simple"
+    echo "  $0 my-device simple"
     exit 1
 fi
 
@@ -20,17 +20,21 @@ THING_NAME="$1"
 TEST_TYPE="$2"
 REGION="${AWS_REGION:-us-west-2}"
 
+# Resolve project root (two levels up from scripts/e2e-tests/)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+
 case "$TEST_TYPE" in
     simple)
-        TEMPLATE_FILE="job-templates/simple-multi-step.json"
+        TEMPLATE_FILE="${PROJECT_ROOT}/job-templates/simple-multi-step.json"
         JOB_PREFIX="multi-step-simple"
         ;;
     device)
-        TEMPLATE_FILE="job-templates/multi-step-test.json"
+        TEMPLATE_FILE="${PROJECT_ROOT}/job-templates/multi-step-test.json"
         JOB_PREFIX="multi-step-device"
         ;;
     failure)
-        TEMPLATE_FILE="job-templates/multi-step-with-failure-handling.json"
+        TEMPLATE_FILE="${PROJECT_ROOT}/job-templates/multi-step-with-failure-handling.json"
         JOB_PREFIX="multi-step-failure"
         ;;
     *)
@@ -83,13 +87,13 @@ echo "    --region ${REGION} \\"
 echo "    --query 'execution.statusDetails.detailsMap' \\"
 echo "    --output json | jq ."
 echo ""
-echo "  # Get specific step output"
+echo "  # Get step outputs (multi-step: parse the steps JSON array)"
 echo "  aws iot describe-job-execution \\"
 echo "    --job-id ${JOB_ID} \\"
 echo "    --thing-name ${THING_NAME} \\"
 echo "    --region ${REGION} \\"
-echo "    --query 'execution.statusDetails.detailsMap.step_1_stdout' \\"
-echo "    --output text"
+echo "    --query 'execution.statusDetails.detailsMap.steps' \\"
+echo "    --output text | jq ."
 echo ""
 echo "Monitor on device:"
 echo "  sudo journalctl -u greengrass.service -f | grep '${JOB_ID}'"

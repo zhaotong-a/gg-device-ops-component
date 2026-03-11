@@ -1,5 +1,5 @@
 #!/bin/bash
-# Package aarch64 binary for deployment
+# Package x86_64 binary for deployment
 
 set -e
 
@@ -11,7 +11,7 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$PROJECT_ROOT"
 
 VERSION=$(grep '^version = ' "$PROJECT_ROOT/Cargo.toml" | head -1 | cut -d'"' -f2)
-ARCH="aarch64"
+ARCH="x86_64"
 PACKAGE_NAME="device-ops-${VERSION}-${ARCH}"
 
 echo "Packaging ${PACKAGE_NAME}..."
@@ -19,7 +19,7 @@ echo "Packaging ${PACKAGE_NAME}..."
 # Create package directory structure
 rm -rf package-${ARCH}
 mkdir -p package-${ARCH}/bin
-cp target/aarch64-unknown-linux-gnu/release/device-ops-component package-${ARCH}/bin/
+cp target/x86_64-unknown-linux-gnu/release/device-ops-component package-${ARCH}/bin/
 cp config.json package-${ARCH}/
 
 # Create zip file

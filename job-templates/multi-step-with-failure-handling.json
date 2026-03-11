@@ -50,7 +50,7 @@
   ],
   "finalStep": {
     "action": {
-      "name": "FinalStep-OnlyIfAllSucceed",
+      "name": "FinalStep-Cleanup",
       "type": "runCommand",
       "input": {
         "command": "/bin/echo",

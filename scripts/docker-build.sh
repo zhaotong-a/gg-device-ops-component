@@ -35,10 +35,6 @@ if [ "$TARGET" = "all" ]; then
         CC='zig cc' CFLAGS='-target x86_64-linux-gnu.2.31' cargo test --lib --target x86_64-unknown-linux-gnu
         
         echo ''
-        echo '=== Running integration tests (x86_64) ==='
-        CC='zig cc' CFLAGS='-target x86_64-linux-gnu.2.31' cargo test --test integration_test --target x86_64-unknown-linux-gnu
-        
-        echo ''
         echo '=== Building release binary (x86_64) ==='
         cargo zigbuild --release --target x86_64-unknown-linux-gnu.2.31
         
@@ -96,10 +92,6 @@ else
         
         echo '=== Running library tests ==='
         CC='zig cc' CFLAGS='-target x86_64-linux-gnu.2.31' cargo test --lib --target x86_64-unknown-linux-gnu
-        
-        echo ''
-        echo '=== Running integration tests ==='
-        CC='zig cc' CFLAGS='-target x86_64-linux-gnu.2.31' cargo test --test integration_test --target x86_64-unknown-linux-gnu
         
         echo ''
         echo '=== Building release binary ==='

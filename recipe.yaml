@@ -11,22 +11,23 @@ ComponentConfiguration:
     logging:
       level: "info"
     security:
-      enabled: false
-      commandAllowlist: []
-      pathAllowlist: []
+      allowlist: []
     execution:
       defaultTimeout: 300
     accessControl:
       aws.greengrass.ipc.mqttproxy:
         "com.example.DeviceOps:mqttproxy:1":
-          policyDescription: "Allows access to publish/subscribe to IoT Core MQTT topics for job handling and reconnection detection"
+          policyDescription: "Allows publish/subscribe to IoT Core MQTT topics for job handling"
           operations:
             - "aws.greengrass#PublishToIoTCore"
             - "aws.greengrass#SubscribeToIoTCore"
           resources:
-            - "$aws/things/*/jobs/*"
-            - "$aws/things/+/jobs/notify-next"
-            - "reconnect/*"
+            - "$aws/things/{iot:thingName}/jobs/notify-next"
+            - "$aws/things/{iot:thingName}/jobs/$next/get"
+            - "$aws/things/{iot:thingName}/jobs/$next/get/accepted"
+            - "$aws/things/{iot:thingName}/jobs/*/update"
+            - "$aws/things/{iot:thingName}/jobs/+/update/accepted"
+            - "$aws/things/{iot:thingName}/jobs/+/update/rejected"
 
 Manifests:
   - Platform:
@@ -40,4 +41,16 @@ Manifests:
         {artifacts:decompressedPath}/device-ops-1.0.0-aarch64/bin/device-ops-component
     Artifacts:
       - URI: s3://YOUR-BUCKET/device-ops/1.0.0/device-ops-1.0.0-aarch64.zip
+        Unarchive: ZIP
+  - Platform:
+      os: linux
+      architecture: amd64
+      runtime: "*"
+    Name: Linux-x86_64
+    Lifecycle:
+      run: |
+        export RUST_LOG=device_ops_component={configuration:/logging/level}
+        {artifacts:decompressedPath}/device-ops-1.0.0-x86_64/bin/device-ops-component
+    Artifacts:
+      - URI: s3://YOUR-BUCKET/device-ops/1.0.0/device-ops-1.0.0-x86_64.zip
         Unarchive: ZIP

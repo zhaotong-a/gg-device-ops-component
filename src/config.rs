@@ -9,15 +9,14 @@ pub struct Config {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SecurityConfig {
-    pub enabled: bool,
     #[serde(default)]
-    pub command_allowlist: Vec<String>,
-    #[serde(default)]
-    pub path_allowlist: Vec<String>,
+    pub allowlist: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ExecutionConfig {
     #[serde(default = "default_timeout")]
     pub default_timeout: u64,
@@ -29,8 +28,11 @@ fn default_timeout() -> u64 {
 
 impl Config {
     pub fn load(path: Option<PathBuf>) -> Result<Self> {
-        let config_path =
-            path.unwrap_or_else(|| PathBuf::from("/greengrass/v2/config/device-ops-config.json"));
+        let config_path = path.unwrap_or_else(|| {
+            std::env::var("DEVICE_OPS_CONFIG_PATH")
+                .map(PathBuf::from)
+                .unwrap_or_else(|_| PathBuf::from("/greengrass/v2/config/device-ops-config.json"))
+        });
 
         if !config_path.exists() {
             tracing::warn!("Config file not found, using defaults");
@@ -49,9 +51,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             security: SecurityConfig {
-                enabled: false,
-                command_allowlist: vec![],
-                path_allowlist: vec![],
+                allowlist: vec![],
             },
             execution: ExecutionConfig {
                 default_timeout: default_timeout(),
@@ -68,6 +68,6 @@ mod tests {
     fn test_default_config() {
         let config = Config::default();
         assert_eq!(config.execution.default_timeout, 300);
-        assert!(!config.security.enabled);
+        assert!(config.security.allowlist.is_empty());
     }
 }

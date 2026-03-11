@@ -4,19 +4,19 @@
 
 ## Features
 
-- Execute pre-installed bash scripts via AWS IoT Jobs
+- Execute commands and pre-installed scripts via AWS IoT Jobs
 - **Multi-step jobs** with sequential execution
 - **Failure handling** with `ignoreStepFailure` and `allowStdErr`
 - **Final step** execution for cleanup/summary tasks
-- Automatic reconnection detection and job recovery
+- Automatic job recovery after reconnection (built into IoT Jobs)
 - IAM-based security with job template restrictions
 - Optional command allowlisting for defense-in-depth
 - Works with Greengrass Nucleus Lite
 - ~1.1MB binary, <20MB memory, <2s job latency
 
-**Architecture:** Cloud (IoT Jobs) → Greengrass IPC → Device Ops → Bash Scripts
+**Architecture:** Cloud (IoT Jobs) → Greengrass IPC → Device Ops → Commands / Scripts
 
-**Reconnection Handling:** Automatically detects device reconnections and queries for missed jobs using IoT Core Rules. See [docs/DEPLOYMENT_GUIDE.md](docs/DEPLOYMENT_GUIDE.md) for setup.
+**Reconnection Handling:** Two-phase startup — queries `$next/get` on startup to pick up offline jobs, then subscribes to `notify-next` for steady-state. No overlap, no dedup, no custom IoT Core Rules needed.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for technical details.
 
@@ -24,13 +24,7 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for technical details.
 
 ### Prerequisites
 
-1. **Cloud Setup (One-time):** Set up IoT Core Rule for reconnection detection
-   ```bash
-   # See DEPLOYMENT_GUIDE.md for detailed instructions
-   # Creates rule to detect device reconnections
-   ```
-
-2. **Device Scripts:** Install scripts that jobs will execute
+1. **Device Scripts:** Install scripts that jobs will execute
    ```bash
    sudo mkdir -p /opt/device-scripts
    sudo cp examples/*.sh /opt/device-scripts/
@@ -55,11 +49,16 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for technical details.
 
 **Individual Steps:**
 ```bash
-# Build only
+# Build only (both architectures)
+./scripts/docker-build.sh all
+
+# Build single architecture
 ./scripts/docker-build.sh aarch64
+./scripts/docker-build.sh x86_64
 
 # Package only
 ./scripts/package-aarch64.sh
+./scripts/package-x86_64.sh
 
 # Deploy to group
 ./scripts/deploy-to-group.sh my-group 1.0.0
@@ -75,9 +74,10 @@ Config file: `/greengrass/v2/config/device-ops-config.json`
 ```json
 {
   "security": {
-    "enabled": false,
-    "commandAllowlist": ["/opt/device-scripts/get-store-id.sh"],
-    "pathAllowlist": ["/opt/device-scripts/"]
+    "allowlist": [
+      "/opt/device-scripts/",
+      "hostname"
+    ]
   },
   "execution": {
     "defaultTimeout": 300
@@ -186,7 +186,7 @@ Execute multiple commands sequentially:
 **Key Points:**
 - Steps execute sequentially
 - Execution stops on first failure (unless `ignoreStepFailure: true`)
-- `finalStep` only runs if all steps succeed
+- `finalStep` always runs (like `try/finally`) — use for cleanup or summary
 - Set `includeStdOut: true` to capture command output
 - Multi-step results are in compact JSON format
 
@@ -265,12 +265,12 @@ ls -la /opt/device-scripts/
 
 - **[docs/DEPLOYMENT_GUIDE.md](docs/DEPLOYMENT_GUIDE.md)** - Complete deployment guide with multi-step examples
 - **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** - System architecture and technical details
+- **[docs/DESIGN.md](docs/DESIGN.md)** - Design rationale, security model, and alternatives analysis
 - **[docs/TESTING_GUIDE.md](docs/TESTING_GUIDE.md)** - Testing procedures and structure
 - **[docs/HOW_TO_CHECK_JOB_OUTPUT.md](docs/HOW_TO_CHECK_JOB_OUTPUT.md)** - Viewing single and multi-step job results
-- **[CHANGELOG.md](CHANGELOG.md)** - Version history
 - **examples/** - Sample device scripts (install to `/opt/device-scripts/`)
 - **job-templates/** - Example job templates for testing
 - **scripts/** - Build and deployment scripts
 - **scripts/e2e-tests/** - End-to-end tests for real devices
 
-**Cost:** $0.0025/job + minimal reconnection overhead (~$3.60/month for 1000 devices)
+**Cost:** $0.0025/job (~$2.50/month for 1000 devices at 1 job/day)

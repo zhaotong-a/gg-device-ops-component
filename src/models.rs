@@ -91,6 +91,21 @@ pub struct ExecutionOutput {
     pub stderr_truncated: bool,
 }
 
+impl ExecutionOutput {
+    /// Create a synthetic error output for steps that failed before producing real output
+    pub fn from_error(error: &impl std::fmt::Display) -> Self {
+        Self {
+            stdout: String::new(),
+            stderr: error.to_string(),
+            exit_code: -1,
+            execution_time_ms: 0,
+            stderr_line_count: 1,
+            stdout_truncated: false,
+            stderr_truncated: false,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Command {
     pub script_path: String,
@@ -112,6 +127,26 @@ pub struct StepOutput {
     pub step_name: String,
     pub output: ExecutionOutput,
     pub ignored_failure: bool,
+}
+
+impl StepOutput {
+    fn to_summary_json(&self, include_stdout: bool) -> serde_json::Value {
+        let mut m = serde_json::json!({
+            "name": self.step_name,
+            "exit_code": self.output.exit_code,
+            "time_ms": self.output.execution_time_ms,
+        });
+        if include_stdout && !self.output.stdout.is_empty() {
+            m["stdout"] = serde_json::Value::String(self.output.stdout.clone());
+        }
+        if !self.output.stderr.is_empty() {
+            m["stderr"] = serde_json::Value::String(self.output.stderr.clone());
+        }
+        if self.ignored_failure {
+            m["ignored_failure"] = serde_json::Value::Bool(true);
+        }
+        m
+    }
 }
 
 #[cfg(test)]
@@ -145,15 +180,28 @@ mod tests {
 // ============================================================================
 
 /// Format job execution result into IoT Jobs statusDetails
-/// AWS IoT Jobs requires all values in statusDetails to be strings, not nested objects
-/// AWS IoT Jobs has a limit of 10 key-value pairs in statusDetails
+/// AWS IoT Jobs statusDetails constraints:
+/// - Max 10 key-value pairs
+/// - Max 1,024 characters per value
+/// - Max 128 characters per key
+/// - All values must be strings
+/// Truncate a string to fit within the AWS IoT Jobs 1,024 char value limit.
+fn truncate_to_limit(s: &str) -> String {
+    if s.len() <= 1024 {
+        s.to_string()
+    } else {
+        let mut truncated = s[..1020].to_string();
+        truncated.push_str("...");
+        truncated
+    }
+}
+
 pub fn format_status_details(
     result: &JobExecutionResult,
     include_stdout: bool,
 ) -> serde_json::Value {
     let mut details = serde_json::Map::new();
 
-    // Summary fields (always included)
     details.insert(
         "steps_executed".to_string(),
         serde_json::Value::String(result.outputs.len().to_string()),
@@ -170,89 +218,42 @@ pub fn format_status_details(
         );
     }
 
-    // For multi-step jobs, create compact JSON strings to stay under 10 field limit
     if result.outputs.len() > 1 {
-        // Compact format: JSON array of step summaries
-        let step_summaries: Vec<serde_json::Value> = result
+        let summaries: Vec<serde_json::Value> = result
             .outputs
             .iter()
-            .map(|step| {
-                let mut summary = serde_json::Map::new();
-                summary.insert(
-                    "name".to_string(),
-                    serde_json::Value::String(step.step_name.clone()),
-                );
-                summary.insert(
-                    "exit_code".to_string(),
-                    serde_json::Value::Number(step.output.exit_code.into()),
-                );
-                summary.insert(
-                    "time_ms".to_string(),
-                    serde_json::Value::Number(step.output.execution_time_ms.into()),
-                );
-
-                if include_stdout && !step.output.stdout.is_empty() {
-                    summary.insert(
-                        "stdout".to_string(),
-                        serde_json::Value::String(step.output.stdout.clone()),
-                    );
-                }
-
-                if !step.output.stderr.is_empty() {
-                    summary.insert(
-                        "stderr".to_string(),
-                        serde_json::Value::String(step.output.stderr.clone()),
-                    );
-                }
-
-                if step.ignored_failure {
-                    summary.insert("ignored_failure".to_string(), serde_json::Value::Bool(true));
-                }
-
-                serde_json::Value::Object(summary)
-            })
+            .map(|s| s.to_summary_json(include_stdout))
             .collect();
-
+        let mut steps_json = serde_json::to_string(&summaries).unwrap_or_default();
+        if steps_json.len() > 1024 {
+            // Re-serialize without stdout to fit within limit
+            let summaries_no_stdout: Vec<serde_json::Value> = result
+                .outputs
+                .iter()
+                .map(|s| s.to_summary_json(false))
+                .collect();
+            steps_json = serde_json::to_string(&summaries_no_stdout).unwrap_or_default();
+            if steps_json.len() > 1024 {
+                steps_json.truncate(1020);
+                steps_json.push_str("...]");
+            }
+        }
         details.insert(
             "steps".to_string(),
-            serde_json::Value::String(serde_json::to_string(&step_summaries).unwrap_or_default()),
+            serde_json::Value::String(steps_json),
         );
-    } else {
-        // Single step: use individual fields for easier reading
-        if let Some(step_output) = result.outputs.first() {
-            details.insert(
-                "step_name".to_string(),
-                serde_json::Value::String(step_output.step_name.clone()),
-            );
-            details.insert(
-                "exit_code".to_string(),
-                serde_json::Value::String(step_output.output.exit_code.to_string()),
-            );
-            details.insert(
-                "execution_time_ms".to_string(),
-                serde_json::Value::String(step_output.output.execution_time_ms.to_string()),
-            );
-
-            if include_stdout && !step_output.output.stdout.is_empty() {
-                details.insert(
-                    "stdout".to_string(),
-                    serde_json::Value::String(step_output.output.stdout.clone()),
-                );
-            }
-
-            if !step_output.output.stderr.is_empty() {
-                details.insert(
-                    "stderr".to_string(),
-                    serde_json::Value::String(step_output.output.stderr.clone()),
-                );
-            }
-
-            if step_output.ignored_failure {
-                details.insert(
-                    "ignored_failure".to_string(),
-                    serde_json::Value::String("true".to_string()),
-                );
-            }
+    } else if let Some(step) = result.outputs.first() {
+        details.insert("step_name".into(), step.step_name.clone().into());
+        details.insert("exit_code".into(), step.output.exit_code.to_string().into());
+        details.insert("execution_time_ms".into(), step.output.execution_time_ms.to_string().into());
+        if include_stdout && !step.output.stdout.is_empty() {
+            details.insert("stdout".into(), truncate_to_limit(&step.output.stdout).into());
+        }
+        if !step.output.stderr.is_empty() {
+            details.insert("stderr".into(), truncate_to_limit(&step.output.stderr).into());
+        }
+        if step.ignored_failure {
+            details.insert("ignored_failure".into(), "true".to_string().into());
         }
     }
 
@@ -275,39 +276,34 @@ pub enum JobStatusType {
 }
 
 impl JobStatus {
-    /// Create a succeeded status from execution result
-    pub fn from_success(result: &JobExecutionResult, include_stdout: bool) -> Self {
+    /// Create an IN_PROGRESS status to start the IoT Jobs timeout timer.
+    pub fn in_progress() -> Self {
         Self {
-            status: JobStatusType::Succeeded,
+            status: JobStatusType::InProgress,
+            status_details: serde_json::json!({}),
+        }
+    }
+
+    /// Create status from execution result
+    pub fn from_result(result: &JobExecutionResult, include_stdout: bool) -> Self {
+        let status = if result.overall_success {
+            JobStatusType::Succeeded
+        } else {
+            JobStatusType::Failed
+        };
+        Self {
+            status,
             status_details: format_status_details(result, include_stdout),
         }
     }
 
-    /// Create a failed status from execution result
-    pub fn from_failure(result: &JobExecutionResult, include_stdout: bool) -> Self {
+    /// Create a simple failed status for validation/parse errors
+    pub fn failed(reason: String) -> Self {
         Self {
             status: JobStatusType::Failed,
-            status_details: format_status_details(result, include_stdout),
-        }
-    }
-
-    /// Create a simple failed status for validation errors
-    pub fn failed(reason: String, stdout: Option<String>, stderr: Option<String>) -> Self {
-        let mut details = serde_json::json!({
-            "reason": reason,
-        });
-
-        if let Some(stdout) = stdout {
-            details["stdout"] = serde_json::Value::String(stdout);
-        }
-
-        if let Some(stderr) = stderr {
-            details["stderr"] = serde_json::Value::String(stderr);
-        }
-
-        Self {
-            status: JobStatusType::Failed,
-            status_details: details,
+            status_details: serde_json::json!({
+                "reason": reason,
+            }),
         }
     }
 

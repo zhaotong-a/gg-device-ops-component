@@ -38,7 +38,7 @@ DEPLOYMENT_ID=$(aws greengrassv2 create-deployment \
         \"${COMPONENT_NAME}\": {
             \"componentVersion\": \"${VERSION}\",
             \"configurationUpdate\": {
-                \"merge\": \"{\\\"security\\\":{\\\"enabled\\\":false},\\\"execution\\\":{\\\"defaultTimeout\\\":300}}\"
+                \"merge\": \"{\\\"security\\\":{\\\"allowlist\\\":[]},\\\"execution\\\":{\\\"defaultTimeout\\\":300}}\"
             }
         }
     }" \

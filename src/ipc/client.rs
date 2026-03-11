@@ -12,20 +12,20 @@ pub struct IpcClient {
 
 impl IpcClient {
     pub async fn new() -> Result<Self> {
-        // Initialize the Greengrass SDK
         let sdk = Sdk::init();
 
-        // Connect to Greengrass IPC
         sdk.connect()
             .map_err(|e| DeviceOpsError::IpcError(format!("Failed to connect to IPC: {:?}", e)))?;
 
-        // Get thing name from environment or configuration
         let thing_name = std::env::var("AWS_IOT_THING_NAME")
             .or_else(|_| Self::get_thing_name_from_config())
-            .unwrap_or_else(|_| {
-                tracing::warn!("Could not determine thing name, using default");
-                "unknown-thing".to_string()
-            });
+            .map_err(|_| {
+                DeviceOpsError::IpcError(
+                    "AWS_IOT_THING_NAME not set and could not be determined from config. \
+                     Cannot construct MQTT topics without thing name."
+                        .to_string(),
+                )
+            })?;
 
         tracing::info!(thing_name = %thing_name, "Connected to Greengrass IPC");
 
@@ -33,8 +33,6 @@ impl IpcClient {
     }
 
     fn get_thing_name_from_config() -> std::result::Result<String, String> {
-        // Try to get thing name from Greengrass configuration
-        // This would use GetConfiguration IPC call in production
         Err("Not implemented".to_string())
     }
 
@@ -63,7 +61,6 @@ impl IpcClient {
                     "Failed to parse job notification - job document format is invalid"
                 );
 
-                // Try to extract job ID and send parse error
                 if let Ok(raw_json) = serde_json::from_slice::<serde_json::Value>(payload) {
                     if let Some(execution) = raw_json.get("execution") {
                         if let Some(job_id) = execution.get("jobId").and_then(|id| id.as_str()) {
@@ -80,128 +77,101 @@ impl IpcClient {
         }
     }
 
-    pub async fn subscribe_to_jobs(
-        &mut self,
-    ) -> Result<(mpsc::Receiver<JobOrError>, mpsc::Receiver<()>)> {
-        // Subscribe to IoT Jobs notification topic
-        let notify_topic = format!("$aws/things/{}/jobs/notify-next", self.thing_name);
+    /// Phase 1: Query for any pending job queued while offline.
+    ///
+    /// Subscribes to `$next/get/accepted`, publishes `$next/get`, and waits
+    /// for a response. Returns the pending job if one exists, or None.
+    /// This must be called BEFORE `subscribe_to_notify_next` to avoid duplicates.
+    pub async fn query_pending_job(&mut self) -> Result<Option<JobOrError>> {
         let qos = Qos::AtLeastOnce;
+        let (tx, mut rx) = mpsc::channel(1);
 
-        tracing::info!(topic = %notify_topic, "Subscribing to IoT Jobs notifications");
+        // Subscribe to $next/get/accepted to receive the query response
+        let next_topic = format!("$aws/things/{}/jobs/$next/get/accepted", self.thing_name);
+        tracing::info!(topic = %next_topic, "Subscribing to job query responses");
 
-        let (job_tx, job_rx) = mpsc::channel(100);
-        let (reconnect_tx, reconnect_rx) = mpsc::channel(100);
-
-        // Create callback for job notifications
-        // Note: Box::leak is intentional - callbacks must live for program lifetime
-        let job_callback = Box::leak(Box::new(move |_topic: &str, payload: &[u8]| {
+        let callback = Box::leak(Box::new(move |_topic: &str, payload: &[u8]| {
             if let Some(job_or_error) = Self::parse_job_notification(payload) {
-                if let Err(e) = job_tx.blocking_send(job_or_error) {
-                    tracing::error!(error = %e, "Failed to send job to channel");
+                let _ = tx.try_send(job_or_error);
+            }
+        }));
+
+        let sub = self.sdk.subscribe_to_iot_core(&next_topic, qos, callback)
+            .map_err(|e| DeviceOpsError::IpcError(format!("Failed to subscribe to $next/get/accepted: {:?}", e)))?;
+        std::mem::forget(sub);
+
+        // Publish $next/get to ask IoT Jobs for the next pending job
+        let get_topic = format!("$aws/things/{}/jobs/$next/get", self.thing_name);
+        tracing::debug!(topic = %get_topic, "Requesting next pending job");
+        self.sdk
+            .publish_to_iot_core(&get_topic, b"{}", qos)
+            .map_err(|e| DeviceOpsError::IpcError(format!("Failed to request next job: {:?}", e)))?;
+
+        // Wait briefly for a response — if no pending job, IoT Jobs responds
+        // with an empty execution (parsed as None by parse_job_notification)
+        match tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv()).await {
+            Ok(Some(job_or_error)) => Ok(Some(job_or_error)),
+            Ok(None) => Ok(None),
+            Err(_) => {
+                tracing::debug!("No pending job found (query timed out)");
+                Ok(None)
+            }
+        }
+    }
+
+    /// Phase 2: Subscribe to notify-next for steady-state job delivery.
+    ///
+    /// Returns a channel that receives jobs as they arrive. This should be
+    /// called AFTER `query_pending_job` to avoid processing the same job twice.
+    pub async fn subscribe_to_notify_next(&mut self) -> Result<mpsc::Receiver<JobOrError>> {
+        let qos = Qos::AtLeastOnce;
+        let (tx, rx) = mpsc::channel(100);
+
+        let callback = Box::leak(Box::new(move |_topic: &str, payload: &[u8]| {
+            if let Some(job_or_error) = Self::parse_job_notification(payload) {
+                if let Err(e) = tx.try_send(job_or_error) {
+                    tracing::error!(error = %e, "Failed to send job to channel (channel full or closed)");
                 }
             }
         }));
 
-        // Subscribe to notify-next topic
-        let subscription = self
-            .sdk
-            .subscribe_to_iot_core(&notify_topic, qos, job_callback)
-            .map_err(|e| DeviceOpsError::IpcError(format!("Failed to subscribe: {:?}", e)))?;
+        let notify_topic = format!("$aws/things/{}/jobs/notify-next", self.thing_name);
+        tracing::info!(topic = %notify_topic, "Subscribing to IoT Jobs notifications");
+        let sub = self.sdk.subscribe_to_iot_core(&notify_topic, qos, callback)
+            .map_err(|e| DeviceOpsError::IpcError(format!("Failed to subscribe to notify-next: {:?}", e)))?;
+        std::mem::forget(sub);
 
-        // Keep subscription alive by leaking it (intentional for program lifetime)
-        std::mem::forget(subscription);
+        // Debug subscriptions for operational visibility
+        self.subscribe_to_update_responses(qos)?;
 
-        // Subscribe to $next/get/accepted for job request responses
-        let next_topic = format!("$aws/things/{}/jobs/$next/get/accepted", self.thing_name);
-        tracing::info!(topic = %next_topic, "Subscribing to job request responses");
+        Ok(rx)
+    }
 
-        let next_subscription = self
-            .sdk
-            .subscribe_to_iot_core(&next_topic, qos, job_callback)
-            .map_err(|e| {
-                DeviceOpsError::IpcError(format!(
-                    "Failed to subscribe to $next/get/accepted: {:?}",
-                    e
-                ))
-            })?;
+    /// Subscribe to job update accepted/rejected topics for debug logging
+    fn subscribe_to_update_responses(&self, qos: Qos) -> Result<()> {
+        let accepted_topic = format!("$aws/things/{}/jobs/+/update/accepted", self.thing_name);
+        let rejected_topic = format!("$aws/things/{}/jobs/+/update/rejected", self.thing_name);
 
-        std::mem::forget(next_subscription);
-
-        // Subscribe to reconnection signal topic (zdb11 pattern)
-        let reconnect_topic = format!("reconnect/{}", self.thing_name);
-        tracing::info!(topic = %reconnect_topic, "Subscribing to reconnection signals");
-
-        // Note: Box::leak is intentional - callbacks must live for program lifetime
-        let reconnect_callback = Box::leak(Box::new(move |topic: &str, payload: &[u8]| {
-            tracing::info!(
-                topic = %topic,
-                payload = ?String::from_utf8_lossy(payload),
-                "Reconnection detected - will query pending jobs"
-            );
-            if let Err(e) = reconnect_tx.blocking_send(()) {
-                tracing::error!(error = %e, "Failed to send reconnection signal");
-            }
-        }));
-
-        let reconnect_subscription = self
-            .sdk
-            .subscribe_to_iot_core(&reconnect_topic, qos, reconnect_callback)
-            .map_err(|e| {
-                DeviceOpsError::IpcError(format!("Failed to subscribe to reconnect topic: {:?}", e))
-            })?;
-
-        std::mem::forget(reconnect_subscription);
-
-        // Subscribe to update response topics to see AWS's actual response
-        let update_accepted_topic =
-            format!("$aws/things/{}/jobs/+/update/accepted", self.thing_name);
-        let update_rejected_topic =
-            format!("$aws/things/{}/jobs/+/update/rejected", self.thing_name);
-
-        tracing::info!(topic = %update_accepted_topic, "Subscribing to update accepted responses");
-        tracing::info!(topic = %update_rejected_topic, "Subscribing to update rejected responses");
-
-        // Create debug callback for update responses
-        // Note: Box::leak is intentional - callbacks must live for program lifetime
         let debug_callback = Box::leak(Box::new(move |topic: &str, payload: &[u8]| {
             let payload_str = String::from_utf8_lossy(payload);
             if topic.contains("/update/accepted") {
-                tracing::info!(
-                    topic = %topic,
-                    payload = %payload_str,
-                    "AWS ACCEPTED job status update"
-                );
+                tracing::info!(topic = %topic, payload = %payload_str, "AWS ACCEPTED job status update");
             } else if topic.contains("/update/rejected") {
-                tracing::error!(
-                    topic = %topic,
-                    payload = %payload_str,
-                    "AWS REJECTED job status update"
-                );
+                tracing::error!(topic = %topic, payload = %payload_str, "AWS REJECTED job status update");
             }
         }));
 
-        let update_accepted_sub = self
-            .sdk
-            .subscribe_to_iot_core(&update_accepted_topic, qos, debug_callback)
-            .map_err(|e| {
-                DeviceOpsError::IpcError(format!("Failed to subscribe to update/accepted: {:?}", e))
-            })?;
+        let sub1 = self.sdk.subscribe_to_iot_core(&accepted_topic, qos, debug_callback)
+            .map_err(|e| DeviceOpsError::IpcError(format!("Failed to subscribe to update/accepted: {:?}", e)))?;
+        let sub2 = self.sdk.subscribe_to_iot_core(&rejected_topic, qos, debug_callback)
+            .map_err(|e| DeviceOpsError::IpcError(format!("Failed to subscribe to update/rejected: {:?}", e)))?;
+        std::mem::forget(sub1);
+        std::mem::forget(sub2);
 
-        let update_rejected_sub = self
-            .sdk
-            .subscribe_to_iot_core(&update_rejected_topic, qos, debug_callback)
-            .map_err(|e| {
-                DeviceOpsError::IpcError(format!("Failed to subscribe to update/rejected: {:?}", e))
-            })?;
-
-        std::mem::forget(update_accepted_sub);
-        std::mem::forget(update_rejected_sub);
-
-        Ok((job_rx, reconnect_rx))
+        Ok(())
     }
 
     pub async fn update_job_status(&self, job_id: &str, status: JobStatus) -> Result<()> {
-        // Publish job status update to IoT Core
         let topic = format!("$aws/things/{}/jobs/{}/update", self.thing_name, job_id);
         let qos = Qos::AtLeastOnce;
 
@@ -222,24 +192,4 @@ impl IpcClient {
 
         Ok(())
     }
-
-    pub async fn request_next_job(&self) -> Result<()> {
-        // Publish to $next/get to request pending jobs
-        let topic = format!("$aws/things/{}/jobs/$next/get", self.thing_name);
-        let qos = Qos::AtLeastOnce;
-        let payload = b"{}"; // Empty JSON object
-
-        tracing::debug!(topic = %topic, "Requesting next pending job");
-
-        self.sdk
-            .publish_to_iot_core(&topic, payload, qos)
-            .map_err(|e| {
-                DeviceOpsError::IpcError(format!("Failed to request next job: {:?}", e))
-            })?;
-
-        Ok(())
-    }
 }
-
-// Note: Tests removed as they require a real Greengrass environment
-// Integration tests should be run on actual devices

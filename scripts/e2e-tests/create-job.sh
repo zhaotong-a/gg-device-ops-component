@@ -8,7 +8,7 @@ if [ $# -lt 2 ]; then
     echo "Usage: $0 <thing-name> <template-id>"
     echo ""
     echo "Example:"
-    echo "  $0 ihm-dpm-dpm-pi4 get-store-id"
+    echo "  $0 my-device get-store-id"
     exit 1
 fi
 

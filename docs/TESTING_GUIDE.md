@@ -25,7 +25,7 @@ cargo test --lib
 cargo test test_multi_step_execution_logic
 
 # In Docker (recommended)
-./scripts/docker-build.sh aarch64
+./scripts/docker-build.sh
 ```
 
 **Coverage**: ~20 tests covering all core logic
@@ -94,12 +94,12 @@ The code uses traits for testability:
 ```rust
 #[async_trait]
 pub trait CommandRunner: Send + Sync {
-    async fn run(&self, command: &Command) -> Result<ExecutionOutput>;
+    async fn run(&self, command: &Command, timeout_secs: u64) -> Result<ExecutionOutput>;
 }
 ```
 
 **Implementations**:
-- `SystemCommandRunner` - Production (executes real commands)
+- `SystemCommandRunner` - Production (executes real commands with timeout + process kill)
 - `MockCommandRunner` - Testing (returns predefined responses)
 
 **Usage in tests**:

@@ -8,7 +8,7 @@ if [ $# -lt 1 ]; then
     echo "Usage: $0 <thing-name>"
     echo ""
     echo "Example:"
-    echo "  $0 ihm-dpm-dpm-pi4"
+    echo "  $0 my-device"
     exit 1
 fi
 

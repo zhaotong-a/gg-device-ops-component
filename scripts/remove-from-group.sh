@@ -8,7 +8,7 @@ if [ $# -lt 1 ]; then
     echo "Usage: $0 <thing-group-name>"
     echo ""
     echo "Example:"
-    echo "  $0 zhatong-test"
+    echo "  $0 my-device-group"
     exit 1
 fi
 
