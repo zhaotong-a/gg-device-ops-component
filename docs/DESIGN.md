@@ -68,7 +68,7 @@ A lightweight Greengrass component that receives job documents via AWS IoT Jobs,
 │             │ execvp (no shell)                  │
 │  ┌──────────▼──────────────────┐                 │
 │  │  System binaries / scripts  │                 │
-│  │  (e.g. /sbin/ifconfig,     │                 │
+│  │  (e.g. /sbin/ifconfig,      │                 │
 │  │   /opt/device-scripts/*.sh) │                 │
 │  └─────────────────────────────┘                 │
 └──────────────────────────────────────────────────┘
@@ -94,7 +94,7 @@ Per job:
 5. Validate job document
 6. Send IN_PROGRESS (starts IoT Jobs timeout timer)
 7. For each step: security check → execute with timeout → evaluate success
-8. Execute finalStep (always, regardless of prior failures)
+8. Execute finalStep if present (always runs regardless of prior failures)
 9. Format statusDetails (≤10 fields, ≤1,024 chars/value)
 10. Publish SUCCEEDED or FAILED
 11. IoT Jobs auto-delivers next pending job via notify-next
@@ -120,14 +120,19 @@ We evaluated five alternatives. The comparison (details in [Appendix A](#appendi
 |---|---|---|---|---|---|---|
 | Memory | Custom agent | ~100 MB | N/A | Custom | ~50 MB | **<20 MB** |
 | Cost (1000 devices, 1 op/month) | <$1/mo | ~$5,000/mo | $0 | $0 | $0 | **~$3/mo** |
-| Offline job queuing | No | No | No | Custom | Yes | **Yes** |
+| Offline job queuing | No* | No | No | Custom | Yes | **Yes** |
 | Fleet rollout control | No | Yes | No | Custom | Yes | **Yes** |
-| Multi-step jobs | No | No | N/A | Custom | No | **Yes** |
+| Multi-step jobs | Yes** | No | N/A | Custom | No | **Yes** |
 | Greengrass Lite | Possible | No | N/A | Yes | No | **Yes** |
 | Audit trail | Yes | Yes | No | Custom | Yes | **Yes** |
 | Build effort | Medium | None | None | High | Low | **Medium** |
 
 IoT Jobs gives us the fleet management primitives (queuing, targeting, rollout, audit) for free. The custom component adds the device-side execution layer that's small enough for constrained hardware and flexible enough for multi-step workflows with cleanup semantics.
+
+\* IoT Commands supports offline queuing via MQTT persistent sessions, but Greengrass Nucleus Lite uses clean sessions, so this is effectively unavailable.
+\*\* IoT Commands payload is opaque — by sending our `JobDocument` format as the payload, the device component handles multi-step, `finalStep`, and `ignoreStepFailure` the same way. Multi-step is not a native Commands feature, but works because the execution logic lives on the device side.
+
+IoT Commands also stands out as a low-cost option. If the use case evolves to require a large volume of remote operations, IoT Commands could be worth supporting as an optional delivery mechanism alongside IoT Jobs. The integration effort is low since the existing executor, security validator, and models are all reusable — only a new MQTT subscriber and payload mapper would be needed (see [Appendix A](#appendix-a-alternatives-analysis) for details). The main trade-off: Commands gives you lower cost and near-real-time delivery, but lacks offline queuing and fleet rollout control.
 
 ---
 
@@ -148,10 +153,10 @@ IoT Jobs gives us the fleet management primitives (queuing, targeting, rollout, 
 ### Security Invariants
 
 1. Commands are never passed through a shell — always direct execvp
-2. Bare commands (e.g. `hostname`) resolve via PATH; absolute paths are used as-is
-3. Path traversal checks and symlink resolution only apply to absolute paths
-4. When the allowlist is non-empty, commands must match an entry (exact or directory prefix)
-5. `runAsUser` requires verified passwordless sudo — falls back to current user on failure
+2. Bare commands (e.g. `hostname`) resolve via PATH; absolute paths go through symlink resolution (`canonicalize`) before allowlist checking
+3. Path traversal checks and symlink resolution only apply to absolute paths — bare commands skip these checks
+4. When the allowlist is non-empty, commands must match an entry (exact or directory prefix). Empty or omitted allowlist disables security validation entirely
+5. `runAsUser` requires verified passwordless sudo — falls back to current user if the user is not found, fails the step if the sudo check itself errors
 
 ### Example: IAM Policy Restricting to Specific Templates
 
@@ -191,7 +196,7 @@ IoT Jobs gives us the fleet management primitives (queuing, targeting, rollout, 
 
 **Device:** No pre-installed script needed. The job template references a system binary directly (e.g., `/sbin/ifconfig`).
 
-**Cloud:** Create job template with `"command": "/sbin/ifconfig"` and `"args": ["eth0"]` → device executes and returns network interface info in statusDetails. Works when the allowlist is empty, or when the binary is in the allowlist.
+**Cloud:** Create job template with `"command": "/sbin/ifconfig"` and `"args": ["eth0"]` → device executes and returns network interface info in statusDetails. Works when the allowlist is omitted (no restrictions), or when the binary is in the allowlist.
 
 ### Use Case 4: Multi-Step with Cleanup
 
@@ -227,7 +232,7 @@ device-ops-component/
 
 1. Steps execute sequentially
 2. Failure (exit code ≠ 0 or stderr > `allowStdErr`) stops the pipeline unless `ignoreStepFailure: true`
-3. `finalStep` always runs (try/finally) — use for cleanup
+3. `finalStep` is optional — if present, it always runs (try/finally) — use for cleanup
 4. Failed steps with `ignoreStepFailure` are recorded in output for observability
 5. Overall status is SUCCEEDED only if all non-ignored steps succeeded
 
@@ -273,7 +278,7 @@ The `allowlist` is a single list with simple rules:
 |---|---|---|
 | Malformed job document | Extract job ID if possible, report FAILED | IoT Jobs delivers next via notify-next |
 | Security violation | Report FAILED before any step executes | Fix template, re-create job |
-| Command timeout | Kill process group, report FAILED | Adjust timeout in template |
+| Command timeout | Kill process, report FAILED | Adjust timeout in template |
 | Command not found | Record in step result, pipeline failure semantics | Fix device filesystem |
 | IPC publish failure | Log error, job stays QUEUED | Component restart re-delivers via $next/get |
 
@@ -300,9 +305,18 @@ AWS launched the [Commands feature](https://docs.aws.amazon.com/iot/latest/devel
 
 **Pros:** Managed service, payload templates with parameter validation, concurrent execution, uses MQTT (works through Greengrass IPC).
 
-**Why not:** Designed for single-device near-real-time actions, not fleet-scale batch operations. No job queuing for offline devices. No multi-step execution, no `ignoreStepFailure`, no `finalStep`. No fleet rollout control. Still requires a device-side agent to interpret payloads. Newer service (GA late 2024).
+**Why not:** Designed for single-device near-real-time actions, not fleet-scale batch operations. No offline queuing for devices using clean sessions (including Greengrass Nucleus Lite). No fleet rollout control. Still requires a device-side agent to interpret payloads. Newer service (GA late 2024). Note: the payload is opaque, so multi-step execution is achievable by embedding our `JobDocument` format in the Commands payload — the limitation is at the service level (no native multi-step), not the device side.
 
 **When it's the right choice:** Interactive single-device operations where the device is known to be online — e.g., "turn on the LED on device X right now."
+
+**Integration effort if added as optional delivery mechanism:** Low. The existing executor, security validator, and models are reusable — they are agnostic to the delivery mechanism. The new work would be:
+1. A new MQTT subscriber in `client.rs` for the Commands request topic (`$aws/commands/things/{thingName}/executions/+/request`)
+2. A payload mapper to convert the Commands payload into the existing `JobDocument` / `JobAction` structs. Since the Commands payload is opaque and supports any format, we can send our full `JobDocument` as the payload — multi-step, `finalStep`, and `ignoreStepFailure` all work as-is
+3. A response publisher to the Commands response topic, using the `UpdateCommandExecution` status model (CREATED → IN_PROGRESS → SUCCEEDED/FAILED/REJECTED), which differs from the IoT Jobs `UpdateJobExecution` pattern
+4. A decision on concurrency — Commands supports concurrent execution on a device, unlike IoT Jobs (one at a time). We'd need to decide whether to support concurrent execution or serialize them
+5. Wiring into the event loop in `jobs.rs`
+
+Estimated effort: a few days for a basic integration. The architecture already separates delivery from execution, so it plugs in cleanly. The main additional complexity is the different status reporting model and the concurrency decision.
 
 ### AWS Systems Manager (SSM) Run Command
 
